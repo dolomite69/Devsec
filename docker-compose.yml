@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    container_name: dockerforge_backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      GROQ_MODEL: llama-3.3-70b-versatile
+      DOCKERFORGE_WORK_DIR: /work
+    volumes:
+      - ./tmp:/work
+      # NOTE: On Windows, this requires Docker Desktop with WSL 2 backend.
+      # May not work on systems without Docker Desktop support.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - dockerforge-net
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: dockerforge_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - dockerforge-net
+    restart: unless-stopped
+
+networks:
+  dockerforge-net:
+    driver: bridge
