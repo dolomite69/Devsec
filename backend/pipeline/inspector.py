@@ -153,15 +153,42 @@ def _read_key_files(root: str, file_tree: list[str]) -> dict[str, str]:
     return result
 
 
+# Manifest files that can appear in multiple sub-projects of a monorepo. We
+# collect EVERY occurrence (keyed by relative path) so the LLM can see e.g.
+# backend/package.json and frontend/package.json separately instead of just one.
+_MANIFEST_NAMES = {
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "go.mod",
+    "pom.xml",
+}
+
+
+def _read_all_manifests(root: str, file_tree: list[str]) -> dict[str, str]:
+    manifests: dict[str, str] = {}
+    for rel_path in file_tree:
+        fname = rel_path.rsplit("/", 1)[-1]
+        if fname in _MANIFEST_NAMES:
+            abs_path = os.path.join(root, rel_path.replace("/", os.sep))
+            try:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as fh:
+                    manifests[rel_path] = fh.read(_MAX_FILE_BYTES)
+            except OSError:
+                pass
+    return manifests
+
+
 def _has_dockerfile(file_tree: list[str]) -> bool:
     return any(p.rsplit("/", 1)[-1] == "Dockerfile" for p in file_tree)
 
 
-def _scan_sync(repo_url: str, clone_path: str) -> dict:
+def _inspect_sync(repo_url: str, clone_path: str) -> dict:
     _clone(repo_url, clone_path)
     file_tree = _build_file_tree(clone_path)
     detected_language = _detect_language(file_tree)
     key_files = _read_key_files(clone_path, file_tree)
+    manifests = _read_all_manifests(clone_path, file_tree)
     has_existing_dockerfile = _has_dockerfile(file_tree)
 
     return {
@@ -170,6 +197,7 @@ def _scan_sync(repo_url: str, clone_path: str) -> dict:
         "detected_language": detected_language,
         "file_tree": file_tree,
         "key_files": key_files,
+        "manifests": manifests,
         "has_existing_dockerfile": has_existing_dockerfile,
     }
 
@@ -178,9 +206,9 @@ def _scan_sync(repo_url: str, clone_path: str) -> dict:
 # Public async API
 # ---------------------------------------------------------------------------
 
-async def scan_repo(github_url: str, work_dir: str, job_id: str) -> dict:
-    if not github_url.startswith("https://github.com/"):
-        raise ValueError(f"Only GitHub URLs are supported, got: {github_url!r}")
+async def inspect_repo(repo_url: str, work_dir: str, build_id: str) -> dict:
+    if not repo_url.startswith("https://github.com/"):
+        raise ValueError(f"Only GitHub URLs are supported, got: {repo_url!r}")
 
-    clone_path = os.path.join(work_dir, job_id)
-    return await asyncio.to_thread(_scan_sync, github_url, clone_path)
+    clone_path = os.path.join(work_dir, build_id)
+    return await asyncio.to_thread(_inspect_sync, repo_url, clone_path)

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
-import "./App.css";
-import InputForm from "./components/InputForm";
-import StepTimeline from "./components/StepTimeline";
-import LogViewer from "./components/LogViewer";
-import DockerfileOutput from "./components/DockerfileOutput";
+import "./styles/app.css";
+import RepoForm from "./features/build/RepoForm";
+import PipelineSteps from "./features/build/PipelineSteps";
+import ConsoleLog from "./features/build/ConsoleLog";
+import ResultPanel from "./features/build/ResultPanel";
 
-const DEFAULT_STEPS = [
+const DEFAULT_STAGES = [
   { id: 1, name: "Validate URL", status: "WAITING", message: "" },
   { id: 2, name: "Clone Repository", status: "WAITING", message: "" },
   { id: 3, name: "Analyze Codebase", status: "WAITING", message: "" },
@@ -24,20 +24,20 @@ const STATUS_TONE = {
 };
 
 function App() {
-  const [jobId, setJobId] = useState("");
+  const [buildId, setBuildId] = useState("");
   const [logs, setLogs] = useState([]);
-  const [steps, setSteps] = useState(DEFAULT_STEPS);
-  const [jobResult, setJobResult] = useState(null);
+  const [stages, setStages] = useState(DEFAULT_STAGES);
+  const [buildResult, setBuildResult] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [streamStatus, setStreamStatus] = useState("idle");
 
   const eventSourceRef = useRef(null);
 
   const resetState = () => {
-    setJobId("");
+    setBuildId("");
     setLogs([]);
-    setSteps(DEFAULT_STEPS);
-    setJobResult(null);
+    setStages(DEFAULT_STAGES);
+    setBuildResult(null);
     setIsLoading(false);
     setStreamStatus("idle");
   };
@@ -49,13 +49,13 @@ function App() {
     }
   };
 
-  const fetchResult = async (currentJobId) => {
+  const fetchResult = async (currentBuildId) => {
     try {
-      const response = await axios.get(`/api/forge/${currentJobId}/result`);
-      setJobResult(response.data);
+      const response = await axios.get(`/api/builds/${currentBuildId}/result`);
+      setBuildResult(response.data);
 
-      if (response.data?.steps?.length) {
-        setSteps(response.data.steps);
+      if (response.data?.stages?.length) {
+        setStages(response.data.stages);
       }
 
       if (response.data?.logs?.length) {
@@ -69,10 +69,10 @@ function App() {
     }
   };
 
-  const openStream = (currentJobId) => {
+  const openStream = (currentBuildId) => {
     closeStream();
 
-    const eventSource = new EventSource(`/api/forge/${currentJobId}/stream`);
+    const eventSource = new EventSource(`/api/builds/${currentBuildId}/stream`);
     eventSourceRef.current = eventSource;
     setStreamStatus("streaming");
 
@@ -84,13 +84,13 @@ function App() {
           setLogs(payload.logs);
         }
 
-        if (Array.isArray(payload.steps) && payload.steps.length > 0) {
-          setSteps(payload.steps);
+        if (Array.isArray(payload.stages) && payload.stages.length > 0) {
+          setStages(payload.stages);
         }
 
         if (payload.status === "SUCCESS" || payload.status === "FAILED") {
           closeStream();
-          await fetchResult(currentJobId);
+          await fetchResult(currentBuildId);
         }
       } catch (error) {
         console.error("Failed to parse SSE payload:", error);
@@ -100,7 +100,7 @@ function App() {
     eventSource.onerror = async () => {
       console.warn("SSE connection error or closed.");
       closeStream();
-      await fetchResult(currentJobId);
+      await fetchResult(currentBuildId);
     };
   };
 
@@ -110,15 +110,15 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await axios.post("/api/forge", {
-        github_url: url,
+      const response = await axios.post("/api/builds", {
+        repo_url: url,
       });
 
-      const newJobId = response.data.job_id;
-      setJobId(newJobId);
-      openStream(newJobId);
+      const newBuildId = response.data.build_id;
+      setBuildId(newBuildId);
+      openStream(newBuildId);
     } catch (error) {
-      console.error("Failed to start forge job:", error);
+      console.error("Failed to start build:", error);
       setIsLoading(false);
       setStreamStatus("error");
     }
@@ -130,9 +130,9 @@ function App() {
     };
   }, []);
 
-  const jobStatus = jobResult?.status || (isLoading ? "RUNNING" : "IDLE");
-  const tone = STATUS_TONE[jobStatus] || "idle";
-  const hasStarted = Boolean(jobId) || isLoading;
+  const buildStatus = buildResult?.status || (isLoading ? "RUNNING" : "IDLE");
+  const tone = STATUS_TONE[buildStatus] || "idle";
+  const hasStarted = Boolean(buildId) || isLoading;
 
   return (
     <div className="page">
@@ -146,14 +146,14 @@ function App() {
               </svg>
             </span>
             <div className="brand__text">
-              <span className="brand__name">DockerForge</span>
+              <span className="brand__name">DockerDev</span>
               <span className="brand__tag">Containerize any repo</span>
             </div>
           </div>
 
           <div className={`pill pill--${tone}`}>
             <span className="pill__dot" />
-            {jobStatus}
+            {buildStatus}
           </div>
         </div>
       </header>
@@ -161,22 +161,26 @@ function App() {
       <main className="wrap stack">
         <section className="hero">
           <div className="hero__copy">
+            <span className="hero__eyebrow">
+              <span className="pill__dot" />
+              Groq-powered · blazing fast
+            </span>
             <h1 className="hero__title">
               Turn a GitHub repo into a working <span className="hl">Dockerfile</span>.
             </h1>
             <p className="hero__sub">
-              Paste a public repository link. The agent clones it, studies the stack,
+              Paste a public repository link. DockerDev clones it, studies the stack,
               writes a Dockerfile, then builds and runs it — live.
             </p>
           </div>
-          <InputForm onSubmit={handleSubmit} isLoading={isLoading} />
+          <RepoForm onSubmit={handleSubmit} isLoading={isLoading} />
         </section>
 
         {hasStarted && (
           <div className="meta-strip">
             <div className="meta">
-              <span className="meta__k">Job</span>
-              <span className="meta__v mono">{jobId || "—"}</span>
+              <span className="meta__k">Build</span>
+              <span className="meta__v mono">{buildId || "—"}</span>
             </div>
             <div className="meta">
               <span className="meta__k">Connection</span>
@@ -184,7 +188,7 @@ function App() {
             </div>
             <div className="meta">
               <span className="meta__k">State</span>
-              <span className="meta__v mono">{jobStatus}</span>
+              <span className="meta__v mono">{buildStatus}</span>
             </div>
           </div>
         )}
@@ -195,20 +199,20 @@ function App() {
               <div className="panel__head">
                 <h2 className="panel__title">Pipeline</h2>
               </div>
-              <StepTimeline steps={steps} />
+              <PipelineSteps stages={stages} />
             </div>
 
             <div className="panel panel--stream">
-              <LogViewer logs={logs} isStreaming={isLoading} />
+              <ConsoleLog logs={logs} isStreaming={isLoading} />
             </div>
           </section>
         )}
 
-        <DockerfileOutput dockerfile={jobResult?.dockerfile || ""} jobId={jobId} />
+        <ResultPanel dockerfile={buildResult?.dockerfile || ""} buildId={buildId} />
       </main>
 
       <footer className="footer wrap">
-        <span>DockerForge</span>
+        <span>DockerDev</span>
         <span>Built for fast, repeatable container setup.</span>
       </footer>
     </div>

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
-export default function DockerfileOutput({ dockerfile, jobId }) {
+export default function ResultPanel({ dockerfile, buildId }) {
   const [copied, setCopied] = useState(false)
 
   if (!dockerfile) return null
@@ -36,7 +36,7 @@ export default function DockerfileOutput({ dockerfile, jobId }) {
           </span>
           <div>
             <div className="output__title">Generated Dockerfile</div>
-            <div className="output__job">job · {jobId || '—'}</div>
+            <div className="output__job">build · {buildId || '—'}</div>
           </div>
         </div>
 

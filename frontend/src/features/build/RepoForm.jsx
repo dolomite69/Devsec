@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-export default function InputForm({ onSubmit, isLoading }) {
+export default function RepoForm({ onSubmit, isLoading }) {
   const [url, setUrl] = useState('')
   const [error, setError] = useState('')
 
@@ -69,10 +69,10 @@ export default function InputForm({ onSubmit, isLoading }) {
                 <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
                 <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
               </svg>
-              Forging…
+              Building…
             </>
           ) : (
-            <>Forge container ↗</>
+            <>Build container ↗</>
           )}
         </button>
       </form>

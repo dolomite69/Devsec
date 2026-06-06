@@ -8,7 +8,7 @@ function lineTone(text) {
   return 'info'
 }
 
-export default function LogViewer({ logs = [], isStreaming = false }) {
+export default function ConsoleLog({ logs = [], isStreaming = false }) {
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -19,7 +19,7 @@ export default function LogViewer({ logs = [], isStreaming = false }) {
     <div>
       <div className="console__head">
         <span className="console__dots"><i /><i /><i /></span>
-        <span className="console__title">agent · live output</span>
+        <span className="console__title">build · live output</span>
         {isStreaming && (
           <span className="console__live"><i /> streaming</span>
         )}
@@ -27,7 +27,7 @@ export default function LogViewer({ logs = [], isStreaming = false }) {
 
       <div className="console__body">
         {logs.length === 0 ? (
-          <span className="console__empty">$ waiting for the agent to start…</span>
+          <span className="console__empty">$ waiting for the build to start…</span>
         ) : (
           logs.map((line, i) => (
             <div key={i} className={`logrow logrow--${lineTone(line)}`}>

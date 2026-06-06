@@ -1,14 +1,14 @@
-# DockerForge
+# DockerDev
 
 Paste a GitHub URL → get a working, build-tested Dockerfile.
 
-DockerForge clones a public repo, detects its stack with an LLM, generates a Dockerfile, then builds and runs it to confirm it works — retrying up to 3 times on failure.
+DockerDev clones a public repo, detects its stack with an LLM, generates a Dockerfile, then builds and runs it to confirm it works — retrying up to 3 times on failure.
 
 ## Stack
 
 - **Frontend:** React 19 + Vite (SSE live logs)
 - **Backend:** FastAPI (Python 3.11)
-- **LLM:** Groq (LLaMA 3.3 70B) — picked for low-latency retry loops
+- **LLM:** Groq (LLaMA 3.3 70B via OpenAI-compatible API)
 - **Infra:** Docker, Docker Compose, nginx
 
 ## Pipeline
@@ -21,7 +21,7 @@ On build/run failure the error is fed back to the LLM and regenerated (max 3 att
 
 - Python 3.11+, Node.js 18+
 - Docker (daemon accessible via `/var/run/docker.sock`)
-- A [Groq API key](https://console.groq.com/)
+- A free [Groq API key](https://console.groq.com/keys)
 
 ## Environment
 
@@ -39,7 +39,7 @@ Backend:
 ```bash
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --port 8000 --reload
+uvicorn app:app --port 8000 --reload
 ```
 
 Frontend:
@@ -53,18 +53,19 @@ npm run dev
 ## Run with Docker Compose
 
 ```bash
-export GROQ_API_KEY=your_groq_api_key_here   # PowerShell: $env:GROQ_API_KEY="..."
 docker compose up --build
 ```
+
+> The backend reads `GROQ_API_KEY` from `backend/.env` (passed through via `env_file` in `docker-compose.yml`).
 
 - Frontend → http://localhost:3000
 - Backend → http://localhost:8000
 
 ## API
 
-- `POST /api/forge` — start a job, returns `job_id`
-- `GET /api/forge/{job_id}/stream` — SSE step/log updates
-- `GET /api/forge/{job_id}/result` — final Dockerfile + logs
+- `POST /api/builds` — start a build, returns `build_id`
+- `GET /api/builds/{build_id}/stream` — SSE stage/log updates
+- `GET /api/builds/{build_id}/result` — final Dockerfile + logs
 
 ## Limitations
 
@@ -72,4 +73,4 @@ docker compose up --build
 - Single-root projects (monorepos may be incomplete)
 - Apps needing external DBs/services fail the run check
 - Containers are stopped after a 15s startup timeout
-- No build cache between jobs
+- No build cache between builds

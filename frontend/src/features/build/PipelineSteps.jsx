@@ -1,4 +1,4 @@
-const DEFAULT_STEPS = [
+const DEFAULT_STAGES = [
   { id: 1, name: 'Validate URL' },
   { id: 2, name: 'Clone Repository' },
   { id: 3, name: 'Analyze Codebase' },
@@ -15,12 +15,12 @@ const CLASS = {
   ERROR: 'is-error',
 }
 
-function normalise(steps) {
-  if (!steps || steps.length === 0) {
-    return DEFAULT_STEPS.map(s => ({ ...s, status: 'WAITING', message: '' }))
+function normalise(stages) {
+  if (!stages || stages.length === 0) {
+    return DEFAULT_STAGES.map(s => ({ ...s, status: 'WAITING', message: '' }))
   }
-  return DEFAULT_STEPS.map(def => {
-    const live = steps.find(s => s.id === def.id)
+  return DEFAULT_STAGES.map(def => {
+    const live = stages.find(s => s.id === def.id)
     return live
       ? { ...def, status: live.status, message: live.message ?? '' }
       : { ...def, status: 'WAITING', message: '' }
@@ -53,15 +53,15 @@ function Node({ status, index }) {
   return <span>{index}</span>
 }
 
-export default function StepTimeline({ steps }) {
-  const items = normalise(steps)
+export default function PipelineSteps({ stages }) {
+  const items = normalise(stages)
 
   return (
     <div className="stepper">
-      {items.map((step, i) => {
-        const status = (step.status ?? 'WAITING').toUpperCase()
+      {items.map((stage, i) => {
+        const status = (stage.status ?? 'WAITING').toUpperCase()
         return (
-          <div key={step.id} className={`stp ${CLASS[status] ?? 'is-waiting'}`}>
+          <div key={stage.id} className={`stp ${CLASS[status] ?? 'is-waiting'}`}>
             <div className="stp__rail">
               <div className="stp__node">
                 <Node status={status} index={i + 1} />
@@ -69,8 +69,8 @@ export default function StepTimeline({ steps }) {
               <div className="stp__wire" />
             </div>
             <div className="stp__body">
-              <div className="stp__name">{step.name}</div>
-              {step.message ? <div className="stp__msg">{step.message}</div> : null}
+              <div className="stp__name">{stage.name}</div>
+              {stage.message ? <div className="stp__msg">{stage.message}</div> : null}
             </div>
           </div>
         )

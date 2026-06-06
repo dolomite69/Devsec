@@ -15,8 +15,9 @@ dist/
 frontend/node_modules/
 frontend/dist/
 
-# Repo clones / temp
-tmp/
+# Repo clones / temp (keep the folder, ignore the runtime clones)
+tmp/*
+!tmp/.gitkeep
 backend/tmp/
 
 # IDE / OS

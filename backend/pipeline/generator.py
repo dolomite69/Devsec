@@ -6,34 +6,22 @@ import re
 
 import httpx
 
-# Provider endpoints
-_PROVIDERS = {
-    "groq": "https://api.groq.com/openai/v1/chat/completions",
-    "openai": "https://api.openai.com/v1/chat/completions",
-}
-_DEFAULT_MODELS = {
-    "groq": "llama-3.3-70b-versatile",
-    "openai": "gpt-4o-mini",
-}
+# Groq exposes a fast, OpenAI-compatible chat endpoint.
+_GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+_DEFAULT_MODEL = "llama-3.3-70b-versatile"
 _MAX_RATE_LIMIT_RETRIES = 3
 
 
 def _get_provider_config() -> tuple[str, str, str]:
-    """Return (endpoint, model, api_key) based on .env settings."""
-    provider = os.getenv("LLM_PROVIDER", "groq").lower()
+    """Return (endpoint, model, api_key) for the Groq API."""
     api_key = os.getenv("GROQ_API_KEY", "")
-
-    endpoint = _PROVIDERS.get(provider, _PROVIDERS["openai"])
-    default_model = _DEFAULT_MODELS.get(provider, "gpt-4o-mini")
-    model = os.getenv("GROQ_MODEL", default_model)
-
-    # Auto-detect: if key starts with sk- it's OpenAI
-    if api_key.startswith("sk-") and provider == "groq":
-        endpoint = _PROVIDERS["openai"]
-        if model.startswith("llama"):
-            model = _DEFAULT_MODELS["openai"]
-
-    return endpoint, model, api_key
+    if not api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY is not set. Add it to backend/.env "
+            "(get a free key at https://console.groq.com/keys)."
+        )
+    model = os.getenv("GROQ_MODEL", _DEFAULT_MODEL)
+    return _GROQ_ENDPOINT, model, api_key
 
 _SYSTEM_PROMPT = """\
 You are a Dockerfile expert.
@@ -46,10 +34,12 @@ Critical rules:
   * Use node:18-alpine or node:20-alpine as base image (NEVER use old versions like node:15 or node:12).
   * Copy package*.json first, run "npm install --production" (not plain npm install) to skip devDependencies and reduce image size.
   * Then COPY the rest of the source code.
-  * ALWAYS use CMD ["npm", "start"] as the entrypoint — do NOT guess filenames like server.js or index.js.
+  * START COMMAND: Look at the "scripts" section of the SPECIFIC package.json you are containerizing. If a "start" script exists, use CMD ["npm", "start"]. If there is NO "start" script, do NOT run "npm start" — it will fail with "Missing script: start". Instead run the entry file directly with CMD ["node", "<entryfile>"], where <entryfile> is the package.json "main" field (e.g. server.js) or the obvious server file present in that folder (server.js, index.js, app.js). NEVER use a dev-only script that relies on nodemon for the container start command — run "node" directly.
   * ONLY run npm scripts that are explicitly listed in the "scripts" section of package.json. Do NOT guess or invent script names like "client-install" or "build:client".
-  * For monorepo projects with a "client" or "frontend" folder: do NOT install client/frontend dependencies in the Docker image. Only install and run the backend server.
   * EXPOSE the correct port by reading it from the source code or config. Common patterns: process.env.PORT, app.listen(5000), const PORT = 8080. If the package.json or source mentions a specific port, use that. Default to 5000 for Express apps.
+- MONOREPOS (repos containing multiple sub-projects such as backend/, server/, api/, frontend/, client/, admin/, web/):
+  * Containerize ONLY the backend/server service (the folder whose package.json depends on express/fastify/koa/nest or whose entry file calls app.listen). Do NOT install or run the frontend/client/admin apps.
+  * The docker build context is the repo ROOT. To build the backend, set WORKDIR /app then COPY only that subfolder, e.g. "COPY backend/package*.json ./", "RUN npm install --production", "COPY backend/ ./". Pick the start command from THAT subfolder's package.json using the START COMMAND rule above.
 - For Python web apps (Flask, Django, FastAPI): EXPOSE the correct port (Flask=5000, Django=8000, FastAPI=8000).
 - The Dockerfile must build and start successfully. If the project is a library (no server/app entrypoint), use CMD ["python", "-c", "import <package>; print('<package> loaded successfully')"] or CMD ["node", "-e", "console.log('module loaded')"] to prove it installs correctly.
 - Prefer official slim/alpine base images.
@@ -128,30 +118,58 @@ def _build_user_message(scan_result: dict) -> str:
             lines.append(f"\n--- {filename} ---")
             lines.append(content)
 
-    # Extract actionable info from package.json for Node.js projects
-    pkg_content = key_files.get("package.json", "")
-    if pkg_content:
-        import json as _json
-        try:
-            pkg = _json.loads(pkg_content)
-            scripts = pkg.get("scripts", {})
-            lines.append("")
-            lines.append("EXTRACTED FROM package.json:")
-            if scripts.get("start"):
-                lines.append(f"  start script: \"{scripts['start']}\"")
-            available_scripts = list(scripts.keys())
-            lines.append(f"  available scripts: {available_scripts}")
-            if pkg.get("main"):
-                lines.append(f"  main entrypoint: \"{pkg['main']}\"")
+    if key_files:
+        lines.append("")
+        lines.append("Key file contents:")
+        for filename, content in key_files.items():
+            lines.append(f"\n--- {filename} ---")
+            lines.append(content)
 
-            # Detect port from start script or known patterns
-            import re as _re
-            start_cmd = scripts.get("start", "")
-            port_match = _re.search(r'(?:PORT|port)[=:\s]+(\d{4,5})', pkg_content)
+    # Surface EVERY package.json in the repo (monorepos have several). For each,
+    # extract the scripts/main so the LLM picks the right start command and the
+    # right sub-project to containerize.
+    import json as _json
+    import re as _re
+
+    manifests: dict[str, str] = scan_result.get("manifests", {})
+    package_manifests = {
+        path: content
+        for path, content in manifests.items()
+        if path.rsplit("/", 1)[-1] == "package.json"
+    }
+
+    if package_manifests:
+        lines.append("")
+        if len(package_manifests) > 1:
+            lines.append(
+                "MONOREPO DETECTED — multiple package.json files found. "
+                "Containerize the BACKEND/SERVER service only (the one depending "
+                "on express/fastify/etc. or whose entry calls app.listen)."
+            )
+        lines.append("PACKAGE.JSON FILES (path → details):")
+        for path, content in sorted(package_manifests.items()):
+            lines.append(f"\n  {path}:")
+            try:
+                pkg = _json.loads(content)
+            except Exception:
+                lines.append("    (could not parse)")
+                continue
+            scripts = pkg.get("scripts", {})
+            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+            is_server = any(d in deps for d in ("express", "fastify", "koa", "@nestjs/core", "hapi"))
+            lines.append(f"    role: {'BACKEND/SERVER' if is_server else 'frontend/other'}")
+            lines.append(f"    available scripts: {list(scripts.keys())}")
+            if scripts.get("start"):
+                lines.append(f"    start script: \"{scripts['start']}\"  -> use CMD [\"npm\", \"start\"]")
+            else:
+                entry = pkg.get("main") or "server.js"
+                lines.append(
+                    f"    NO start script — use CMD [\"node\", \"{entry}\"] "
+                    f"(main field: {pkg.get('main', 'not set')})"
+                )
+            port_match = _re.search(r'(?:PORT|port)[=:\s]+(\d{4,5})', content)
             if port_match:
-                lines.append(f"  detected port: {port_match.group(1)}")
-        except Exception:
-            pass
+                lines.append(f"    detected port: {port_match.group(1)}")
 
     lines.append("")
     lines.append("Generate a Dockerfile for this project.")
@@ -198,11 +216,6 @@ async def generate_dockerfile(
     previous_dockerfile: str | None = None,
 ) -> str:
     endpoint, model, api_key = _get_provider_config()
-    if not api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY environment variable is not set. "
-            "Add it to your .env file."
-        )
 
     # Increase temperature on retries to avoid repeating the same output
     temperature = 0.3 if previous_error else 0.2
@@ -214,11 +227,12 @@ async def generate_dockerfile(
     }
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
     }
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    # Groq is fast; a 120s ceiling is plenty even for large prompts.
+    async with httpx.AsyncClient(timeout=120.0) as client:
         response = None
         for attempt in range(_MAX_RATE_LIMIT_RETRIES):
             response = await client.post(endpoint, json=payload, headers=headers)
