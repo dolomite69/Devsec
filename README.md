@@ -213,7 +213,7 @@ Returns `404` if the `build_id` is unknown.
 
 ## ⚙️ Prerequisites
 
-- **Python 3.11+**, **Node.js 18+**
+- **Python 3.11+**, **Node.js 20+**
 - **Docker** running, with the daemon accessible (`/var/run/docker.sock`); Docker Desktop with WSL 2 on Windows
 - A free **[Groq API key](https://console.groq.com/keys)**
 
@@ -227,6 +227,14 @@ GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
 > Tip: hitting Groq's free daily token limit? Switch `GROQ_MODEL` to `llama-3.1-8b-instant` (larger daily allowance).
+
+### Optional variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GROQ_API_KEY` | _(required)_ | Groq API key. |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Chat model used for generation. |
+| `DOCKERFORGE_WORK_DIR` | `backend/tmp` (local) · `/app/tmp` (image) | Where repos are cloned and build files are written. |
 
 ## ▶️ Run locally
 
@@ -264,23 +272,54 @@ docker compose up --build
 ```
 dockerforge/
 ├── docker-compose.yml          # backend + frontend services
+├── render.yaml                 # Render Blueprint (one-click deploy)
 ├── README.md
 ├── backend/
 │   ├── app.py                  # FastAPI entrypoint + routes
-│   ├── Dockerfile
+│   ├── Dockerfile              # python:3.11-slim + git + docker CLI
 │   ├── requirements.txt
 │   ├── core/                   # schemas + in-memory store
-│   └── pipeline/               # inspector, source_fixer, generator, executor, orchestrator
+│   ├── pipeline/               # inspector, source_fixer, generator, executor, orchestrator
+│   └── tmp/                    # cloned repos / build files (latest build kept here)
 ├── frontend/
-│   ├── Dockerfile
-│   ├── nginx.conf
+│   ├── Dockerfile              # node:20-alpine build → nginx:alpine
+│   ├── .dockerignore
+│   ├── nginx.conf              # SPA + /api reverse proxy (SSE-friendly)
 │   ├── vite.config.js
 │   └── src/
 │       ├── App.jsx
 │       ├── features/build/     # RepoForm, PipelineSteps, ConsoleLog, ResultPanel
 │       └── styles/             # global.css, app.css
-└── tmp/                        # cloned repos (the latest successful build is kept here)
 ```
+
+Cloned repos land in **`backend/tmp/`** in every environment (local, Compose, and deployed) — set via `DOCKERFORGE_WORK_DIR`.
+
+---
+
+## ☁️ Deployment
+
+> **Important:** the live **build/preview feature needs a real Docker daemon** (it builds and runs other repos via `/var/run/docker.sock`). It runs **fully only on a VPS / VM** you control — not on Vercel, Netlify, or Render, which don't expose a Docker daemon and forbid running untrusted code.
+
+### Render (UI + API only — builds disabled)
+
+A `render.yaml` Blueprint is included. Render Dashboard → **New → Blueprint** → pick this repo → paste `GROQ_API_KEY` → **Apply**. It provisions:
+
+- `dockerforge-backend` — Docker web service (`backend/`)
+- `dockerforge-frontend` — static site (`frontend/`) with `/api/*` rewritten to the backend
+
+The site loads and the API responds, but submitting a repo will fail at the Docker stage (no daemon on Render). If the backend gets a different URL than `dockerforge-backend.onrender.com`, update the `/api/*` rewrite `destination` in `render.yaml`.
+
+### VPS (full functionality)
+
+On a Linux VM with Docker installed:
+
+```bash
+git clone <your-repo> && cd dockerforge
+printf 'GROQ_API_KEY=...\nGROQ_MODEL=llama-3.3-70b-versatile\n' > backend/.env
+docker compose up --build -d
+```
+
+Put it behind a reverse proxy (Caddy/nginx) for HTTPS, and **add authentication** — anyone who can submit a URL can run code on your server (`docker.sock` access is effectively root). Open the firewall for the preview port range if you want live previews reachable.
 
 ---
 
