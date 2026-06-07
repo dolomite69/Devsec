@@ -1,0 +1,48 @@
+# Render Blueprint — DockerForge
+# Deploy: Render Dashboard → New → Blueprint → pick this repo.
+# You only need to paste GROQ_API_KEY when prompted.
+#
+# NOTE: The live build/preview feature needs a Docker daemon, which Render does
+# NOT provide. On Render the UI and API run, but submitting a repo will fail at
+# the Docker build stage. For full functionality deploy on a VPS instead.
+
+services:
+  # ---------------------------------------------------------------------------
+  # Backend — FastAPI (Docker)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: dockerforge-backend
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false            # paste your key in the Render dashboard
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+
+  # ---------------------------------------------------------------------------
+  # Frontend — React + Vite (static site)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: dockerforge-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+    routes:
+      # Proxy API calls to the backend service (same-origin → no CORS needed)
+      - type: rewrite
+        source: /api/*
+        destination: https://dockerforge-backend.onrender.com/api/*
+      # SPA fallback — every other path serves index.html
+      - type: rewrite
+        source: /*
+        destination: /index.html

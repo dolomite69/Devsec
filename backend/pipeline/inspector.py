@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 
 import git
@@ -93,6 +94,19 @@ def _clone(repo_url: str, clone_path: str) -> None:
     if os.path.exists(clone_path):
         shutil.rmtree(clone_path)
     git.Repo.clone_from(repo_url, clone_path)
+
+
+def _project_name(repo_url: str) -> str:
+    """Derive a filesystem-safe project name from the repo URL.
+
+    https://github.com/user/QuickBite11(.git) -> "QuickBite11"
+    """
+    name = repo_url.rstrip("/").split("/")[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    # Replace anything that isn't a safe path char
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", name).strip("-._")
+    return name or "project"
 
 
 def _build_file_tree(root: str, max_depth: int = 3) -> list[str]:
@@ -194,6 +208,7 @@ def _inspect_sync(repo_url: str, clone_path: str) -> dict:
     return {
         "repo_url": repo_url,
         "local_path": clone_path,
+        "project_name": _project_name(repo_url),
         "detected_language": detected_language,
         "file_tree": file_tree,
         "key_files": key_files,
@@ -210,5 +225,6 @@ async def inspect_repo(repo_url: str, work_dir: str, build_id: str) -> dict:
     if not repo_url.startswith("https://github.com/"):
         raise ValueError(f"Only GitHub URLs are supported, got: {repo_url!r}")
 
-    clone_path = os.path.join(work_dir, build_id)
+    # Folder is <projectname>-<uuid> so kept clones are human-identifiable.
+    clone_path = os.path.join(work_dir, f"{_project_name(repo_url)}-{build_id}")
     return await asyncio.to_thread(_inspect_sync, repo_url, clone_path)

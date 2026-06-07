@@ -31,6 +31,13 @@ class Stage(BaseModel):
     message: str = ""
 
 
+class ProjectFile(BaseModel):
+    """A generated deployment file (Dockerfile, docker-compose.yml, nginx.conf...)."""
+    path: str
+    content: str
+    language: str = "docker"
+
+
 def _default_stages() -> list[Stage]:
     names = [
         "Validate URL",
@@ -50,5 +57,11 @@ class BuildRecord(BaseModel):
     stages: list[Stage] = Field(default_factory=_default_stages)
     logs: list[str] = Field(default_factory=list)
     dockerfile: str = ""
+    files: list[ProjectFile] = Field(default_factory=list)
+    is_stack: bool = False
     error: str = ""
+    project_name: str = ""
+    preview_url: str = ""
+    container_name: str = ""
+    work_dir: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)

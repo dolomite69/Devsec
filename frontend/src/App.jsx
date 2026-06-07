@@ -30,6 +30,8 @@ function App() {
   const [buildResult, setBuildResult] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [streamStatus, setStreamStatus] = useState("idle");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [projectName, setProjectName] = useState("");
 
   const eventSourceRef = useRef(null);
 
@@ -40,6 +42,8 @@ function App() {
     setBuildResult(null);
     setIsLoading(false);
     setStreamStatus("idle");
+    setPreviewUrl("");
+    setProjectName("");
   };
 
   const closeStream = () => {
@@ -60,6 +64,13 @@ function App() {
 
       if (response.data?.logs?.length) {
         setLogs(response.data.logs);
+      }
+
+      if (response.data?.preview_url) {
+        setPreviewUrl(response.data.preview_url);
+      }
+      if (response.data?.project_name) {
+        setProjectName(response.data.project_name);
       }
     } catch (error) {
       console.error("Failed to fetch final result:", error);
@@ -86,6 +97,13 @@ function App() {
 
         if (Array.isArray(payload.stages) && payload.stages.length > 0) {
           setStages(payload.stages);
+        }
+
+        if (payload.preview_url) {
+          setPreviewUrl(payload.preview_url);
+        }
+        if (payload.project_name) {
+          setProjectName(payload.project_name);
         }
 
         if (payload.status === "SUCCESS" || payload.status === "FAILED") {
@@ -146,7 +164,7 @@ function App() {
               </svg>
             </span>
             <div className="brand__text">
-              <span className="brand__name">DockerDev</span>
+              <span className="brand__name">DockerForge</span>
               <span className="brand__tag">Containerize any repo</span>
             </div>
           </div>
@@ -169,7 +187,7 @@ function App() {
               Turn a GitHub repo into a working <span className="hl">Dockerfile</span>.
             </h1>
             <p className="hero__sub">
-              Paste a public repository link. DockerDev clones it, studies the stack,
+              Paste a public repository link. DockerForge clones it, studies the stack,
               writes a Dockerfile, then builds and runs it — live.
             </p>
           </div>
@@ -208,11 +226,17 @@ function App() {
           </section>
         )}
 
-        <ResultPanel dockerfile={buildResult?.dockerfile || ""} buildId={buildId} />
+        <ResultPanel
+          dockerfile={buildResult?.dockerfile || ""}
+          files={buildResult?.files || []}
+          buildId={buildId}
+          previewUrl={previewUrl}
+          projectName={projectName}
+        />
       </main>
 
       <footer className="footer wrap">
-        <span>DockerDev</span>
+        <span>DockerForge</span>
         <span>Built for fast, repeatable container setup.</span>
       </footer>
     </div>

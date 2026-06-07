@@ -1,31 +1,61 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
-export default function ResultPanel({ dockerfile, buildId }) {
+const LANG_MAP = { docker: 'docker', yaml: 'yaml', nginx: 'nginx' }
+
+export default function ResultPanel({ dockerfile, files, buildId, previewUrl, projectName }) {
+  const [activeIdx, setActiveIdx] = useState(0)
   const [copied, setCopied] = useState(false)
 
-  if (!dockerfile) return null
+  // Prefer the multi-file `files` array; fall back to the single Dockerfile.
+  const fileList = useMemo(() => {
+    if (Array.isArray(files) && files.length > 0) return files
+    if (dockerfile) return [{ path: 'Dockerfile', content: dockerfile, language: 'docker' }]
+    return []
+  }, [files, dockerfile])
+
+  if (fileList.length === 0) return null
+
+  const safeIdx = Math.min(activeIdx, fileList.length - 1)
+  const active = fileList[safeIdx]
+  const isStack = fileList.length > 1
 
   function handleCopy() {
-    navigator.clipboard.writeText(dockerfile).then(() => {
+    navigator.clipboard.writeText(active.content).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
   }
 
   function handleDownload() {
-    const blob = new Blob([dockerfile], { type: 'text/plain' })
+    const blob = new Blob([active.content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'Dockerfile'
+    a.download = active.path.split('/').pop() || 'Dockerfile'
     a.click()
     URL.revokeObjectURL(url)
   }
 
   return (
     <div className="output">
+      {previewUrl && (
+        <a
+          className="preview"
+          href={previewUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <span className="preview__pulse" aria-hidden="true" />
+          <span className="preview__text">
+            <span className="preview__label">{isStack ? 'Frontend is live' : 'App is live'}</span>
+            <span className="preview__url">{previewUrl}</span>
+          </span>
+          <span className="preview__cta">Open running app ↗</span>
+        </a>
+      )}
+
       <div className="output__bar">
         <div className="output__left">
           <span className="output__badge" aria-hidden="true">
@@ -35,8 +65,8 @@ export default function ResultPanel({ dockerfile, buildId }) {
             </svg>
           </span>
           <div>
-            <div className="output__title">Generated Dockerfile</div>
-            <div className="output__job">build · {buildId || '—'}</div>
+            <div className="output__title">{isStack ? 'Generated deployment' : 'Generated Dockerfile'}</div>
+            <div className="output__job">{projectName ? `${projectName} · ` : ''}build · {buildId || '—'}</div>
           </div>
         </div>
 
@@ -50,10 +80,26 @@ export default function ResultPanel({ dockerfile, buildId }) {
         </div>
       </div>
 
+      {isStack && (
+        <div className="filetabs" role="tablist">
+          {fileList.map((f, i) => (
+            <button
+              key={f.path}
+              role="tab"
+              aria-selected={i === safeIdx}
+              className={`filetab ${i === safeIdx ? 'is-active' : ''}`}
+              onClick={() => setActiveIdx(i)}
+            >
+              {f.path}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="output__code">
         <SyntaxHighlighter
-          language="docker"
-          style={oneLight}
+          language={LANG_MAP[active.language] || 'docker'}
+          style={oneDark}
           customStyle={{
             margin: 0,
             background: 'transparent',
@@ -63,7 +109,7 @@ export default function ResultPanel({ dockerfile, buildId }) {
           }}
           showLineNumbers
         >
-          {dockerfile}
+          {active.content}
         </SyntaxHighlighter>
       </div>
     </div>

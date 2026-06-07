@@ -279,3 +279,320 @@ async def generate_dockerfile(
         content = "\n".join(lines).strip()
 
     return content
+
+
+# ===========================================================================
+# Full-stack generation (multi-service repos → Dockerfiles + docker-compose)
+# ===========================================================================
+
+_STACK_SYSTEM_PROMPT = """\
+You are a senior DevOps engineer. The user has a MULTI-SERVICE repository (e.g. a
+backend API plus a frontend single-page app, possibly an admin app).
+
+Your job: output the minimal set of files needed to build and run the WHOLE stack
+locally with `docker compose up --build`, so the user can open the FRONTEND in a
+browser and have it talk to the backend.
+
+OUTPUT FORMAT — return ONLY a single JSON object (no markdown fences, no prose).
+Keys are file paths relative to the repo root; values are the full file contents:
+{
+  "docker-compose.yml": "...",
+  "<backendDir>/Dockerfile": "...",
+  "<frontendDir>/Dockerfile": "...",
+  "<frontendDir>/nginx.conf": "..."
+}
+
+RULES:
+- BACKEND service:
+  * node:18-alpine or node:20-alpine. WORKDIR /app. COPY package*.json, RUN npm install
+    (use --production only if there is no build step). COPY source. EXPOSE the real port
+    (read it from the source, e.g. app.listen(4000) -> 4000). Start with the correct command:
+    `npm start` only if a "start" script exists, otherwise CMD ["node", "<entry>"] (the
+    package.json "main" or server.js/index.js/app.js). NEVER use nodemon to start.
+- FRONTEND service (Vite/React/CRA SPA):
+  * MULTI-STAGE build. Stage 1: node:20-alpine, COPY package*.json, RUN npm install,
+    COPY ., RUN npm run build. Stage 2: nginx:alpine, copy the build output to
+    /usr/share/nginx/html. Vite outputs to "dist", Create-React-App outputs to "build" —
+    pick the correct one. Copy the nginx.conf to /etc/nginx/conf.d/default.conf. EXPOSE 80.
+  * The nginx.conf MUST serve the SPA with a fallback: `try_files $uri $uri/ /index.html;`
+- nginx.conf: a minimal server block listening on 80, root /usr/share/nginx/html, with the
+  SPA try_files fallback.
+- docker-compose.yml:
+  * NO top-level "version" key.
+  * service "backend": build context "./<backendDir>", and CRITICALLY publish it on the
+    host at the SAME port the frontend source code calls. The frontend hardcodes a URL like
+    "http://localhost:4000", so you MUST map ports: ["4000:4000"] (use the real detected
+    port) so the browser can reach it.
+  * service "frontend": build context "./<frontendDir>", depends_on: [backend], and publish
+    container port 80. Use ports: ["8080:80"] (a fixed host port is fine; the orchestrator
+    will read the actual mapped port).
+  * Do NOT add a database service unless the repo clearly bundles one. If the backend uses a
+    hosted/remote DB (a connection string in code), no db service is needed.
+- ONLY reference directories/files that exist in the provided file tree.
+- Keep everything minimal and correct. Output ONLY the JSON object.\
+"""
+
+
+def _detect_service_dirs(scan_result: dict) -> tuple[str | None, str | None]:
+    """Return (backend_dir, frontend_dir) from the manifests, or (None, None).
+
+    When several frontend apps exist (e.g. frontend/ + admin/), prefer the
+    customer-facing one (frontend/client/web/app) over admin/dashboard panels.
+    """
+    manifests: dict[str, str] = scan_result.get("manifests", {})
+    backend_dir: str | None = None
+    frontend_candidates: list[str] = []
+
+    import json as _json
+
+    for path, content in manifests.items():
+        if path.rsplit("/", 1)[-1] != "package.json":
+            continue
+        directory = path.rsplit("/", 1)[0] if "/" in path else ""
+        try:
+            pkg = _json.loads(content)
+        except Exception:
+            continue
+        deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+        is_server = any(d in deps for d in ("express", "fastify", "koa", "@nestjs/core", "hapi"))
+        is_frontend = any(
+            d in deps for d in ("react", "react-dom", "vue", "svelte", "vite", "@angular/core")
+        ) and not is_server
+
+        if is_server and backend_dir is None:
+            backend_dir = directory
+        elif is_frontend:
+            frontend_candidates.append(directory)
+
+    def _frontend_rank(directory: str) -> int:
+        low = directory.lower()
+        if low in ("frontend", "client", "web", "app"):
+            return 0
+        if "front" in low or "client" in low or "web" in low or "store" in low:
+            return 1
+        if "admin" in low or "dashboard" in low or "panel" in low:
+            return 3
+        return 2
+
+    frontend_dir = min(frontend_candidates, key=_frontend_rank) if frontend_candidates else None
+    return backend_dir, frontend_dir
+
+
+def is_multi_service(scan_result: dict) -> bool:
+    """True when the repo has both a backend/server and a frontend SPA service."""
+    backend_dir, frontend_dir = _detect_service_dirs(scan_result)
+    return bool(backend_dir) and bool(frontend_dir)
+
+
+def _strip_json_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
+async def _call_llm(messages: list[dict], temperature: float) -> str:
+    """Send a chat completion request to Groq and return the message content."""
+    endpoint, model, api_key = _get_provider_config()
+    payload = {"model": model, "temperature": temperature, "messages": messages}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = None
+        for attempt in range(_MAX_RATE_LIMIT_RETRIES):
+            response = await client.post(endpoint, json=payload, headers=headers)
+            if response.status_code == 429:
+                wait = 30
+                try:
+                    msg = response.json().get("error", {}).get("message", "")
+                    m = re.search(r"(\d+(?:\.\d+)?)s", msg)
+                    if m:
+                        wait = min(int(float(m.group(1))) + 2, 120)
+                except Exception:
+                    pass
+                if attempt < _MAX_RATE_LIMIT_RETRIES - 1:
+                    await asyncio.sleep(wait)
+                    continue
+            break
+
+    if response is None or response.status_code != 200:
+        raise RuntimeError(
+            f"LLM API returned HTTP {response.status_code if response else 'N/A'}: "
+            f"{response.text if response else 'no response'}"
+        )
+
+    try:
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, ValueError) as exc:
+        raise RuntimeError(
+            f"Malformed response from LLM API: {exc}\nRaw response: {response.text}"
+        ) from exc
+
+
+async def generate_stack(
+    scan_result: dict,
+    previous_error: str | None = None,
+    previous_files: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Generate a multi-service stack: per-service Dockerfiles + docker-compose.yml.
+
+    Returns a dict mapping relative file path -> file content.
+    """
+    import json as _json
+
+    backend_dir, frontend_dir = _detect_service_dirs(scan_result)
+
+    context = _build_user_message(scan_result)
+    context += (
+        f"\n\nDETECTED SERVICES (use EXACTLY these directories):\n"
+        f"  backend directory:  {backend_dir or '(unknown)'}\n"
+        f"  frontend directory: {frontend_dir or '(unknown)'}\n"
+        f"Build the customer-facing frontend at '{frontend_dir}'. "
+        "Do NOT containerize any other frontend/admin/dashboard app. "
+        "Generate the docker-compose.yml plus a Dockerfile for the backend and for "
+        f"the '{frontend_dir}' frontend (and that frontend's nginx.conf). "
+        "Return ONLY the JSON object."
+    )
+
+    messages = [
+        {"role": "system", "content": _STACK_SYSTEM_PROMPT},
+        {"role": "user", "content": context},
+    ]
+
+    if previous_files and previous_error:
+        messages.append({
+            "role": "assistant",
+            "content": _json.dumps(previous_files),
+        })
+        messages.append({
+            "role": "user",
+            "content": (
+                "The stack above FAILED with this error:\n\n"
+                f"{_extract_error(previous_error)}\n\n"
+                "Fix the specific problem and return the corrected JSON object only. "
+                "Only reference files/dirs that exist. Keep ports consistent so the "
+                "browser can reach the backend at the URL the frontend code uses."
+            ),
+        })
+
+    temperature = 0.3 if previous_error else 0.2
+    raw = await _call_llm(messages, temperature)
+    raw = _strip_json_fences(raw)
+
+    try:
+        files = _json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Stack generation returned invalid JSON: {exc}\nRaw: {raw[:500]}")
+
+    if not isinstance(files, dict) or not files:
+        raise RuntimeError("Stack generation returned an empty or non-object result.")
+
+    # Normalise: ensure all values are strings
+    files = {str(k): str(v) for k, v in files.items()}
+
+    # Deterministically repair the most common LLM mistakes so even weaker
+    # models produce a runnable stack.
+    return _sanitize_stack(files, scan_result)
+
+
+def _service_has_build_script(scan_result: dict, service_dir: str) -> bool:
+    """True if the package.json in service_dir defines a "build" script."""
+    import json as _json
+
+    manifests: dict[str, str] = scan_result.get("manifests", {})
+    target = f"{service_dir}/package.json" if service_dir else "package.json"
+    content = manifests.get(target)
+    if not content:
+        return False
+    try:
+        scripts = _json.loads(content).get("scripts", {})
+    except Exception:
+        return False
+    return bool(scripts.get("build"))
+
+
+def _sanitize_stack(files: dict[str, str], scan_result: dict) -> dict[str, str]:
+    """Repair common generation mistakes that break `docker compose up`.
+
+    The compose file is parsed as YAML and rebuilt so the repairs are robust
+    regardless of how the model formatted it:
+    1. Drop the obsolete top-level `version:` key.
+    2. Remove empty / null service definitions (e.g. a bare `db:`).
+    3. Remove `depends_on` entries that reference services not defined here.
+    4. Strip `npm run build` from a service's Dockerfile when that service has no
+       "build" script (e.g. an Express backend) — otherwise the build crashes
+       with `Missing script: "build"`.
+    """
+    import yaml
+
+    compose_key = "docker-compose.yml" if "docker-compose.yml" in files else (
+        "docker-compose.yaml" if "docker-compose.yaml" in files else None
+    )
+
+    if compose_key:
+        try:
+            doc = yaml.safe_load(files[compose_key]) or {}
+        except Exception:
+            doc = None
+
+        if isinstance(doc, dict):
+            doc.pop("version", None)
+
+            services = doc.get("services")
+            if isinstance(services, dict):
+                # Drop empty / non-mapping service definitions.
+                services = {
+                    name: body
+                    for name, body in services.items()
+                    if isinstance(body, dict) and body
+                }
+                defined = set(services.keys())
+
+                # Clean depends_on for every service.
+                for body in services.values():
+                    dep = body.get("depends_on")
+                    if dep is None:
+                        continue
+                    if isinstance(dep, list):
+                        kept = [d for d in dep if d in defined]
+                    elif isinstance(dep, dict):
+                        kept = {k: v for k, v in dep.items() if k in defined}
+                    else:
+                        kept = dep if dep in defined else None
+                    if kept:
+                        body["depends_on"] = kept
+                    else:
+                        body.pop("depends_on", None)
+
+                doc["services"] = services
+
+            files[compose_key] = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+
+    # Strip bogus `npm run build` from backend-style Dockerfiles.
+    for path, content in list(files.items()):
+        if path.rsplit("/", 1)[-1] != "Dockerfile":
+            continue
+        service_dir = path.rsplit("/", 1)[0] if "/" in path else ""
+        if _service_has_build_script(scan_result, service_dir):
+            continue
+        new_lines = []
+        for line in content.splitlines():
+            if "npm run build" in line and line.lstrip().upper().startswith("RUN"):
+                fixed = re.sub(r"\s*&&\s*npm run build\b", "", line)
+                fixed = re.sub(r"\bnpm run build\s*&&\s*", "", fixed)
+                if re.match(r"^\s*RUN\s+npm run build\s*$", fixed):
+                    continue  # nothing left, drop the line
+                new_lines.append(fixed)
+            else:
+                new_lines.append(line)
+        files[path] = "\n".join(new_lines)
+
+    return files

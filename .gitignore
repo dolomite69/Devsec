@@ -16,9 +16,10 @@ frontend/node_modules/
 frontend/dist/
 
 # Repo clones / temp (keep the folder, ignore the runtime clones)
+backend/tmp/*
+!backend/tmp/.gitkeep
 tmp/*
 !tmp/.gitkeep
-backend/tmp/
 
 # IDE / OS
 .vscode/

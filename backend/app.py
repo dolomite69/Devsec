@@ -15,7 +15,7 @@ from pipeline.orchestrator import run_build_pipeline, sweep_work_dir
 
 load_dotenv()
 
-app = FastAPI(title="DockerDev")
+app = FastAPI(title="DockerForge")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,7 +30,7 @@ async def _cleanup_stale_builds() -> None:
     """Clear leftover clone folders from builds interrupted by a restart."""
     removed = await asyncio.to_thread(sweep_work_dir)
     if removed:
-        print(f"[DockerDev] Removed {removed} stale build folder(s) on startup")
+        print(f"[DockerForge] Removed {removed} stale build folder(s) on startup")
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ async def _cleanup_stale_builds() -> None:
 
 @app.get("/")
 async def root():
-    return {"message": "DockerDev backend is running"}
+    return {"message": "DockerForge backend is running"}
 
 
 @app.post("/api/builds")
@@ -66,6 +66,8 @@ async def stream_build(build_id: str):
                 "status": current.status,
                 "logs": current.logs,
                 "stages": [s.model_dump() for s in current.stages],
+                "preview_url": current.preview_url,
+                "project_name": current.project_name,
             }
             yield {"data": json.dumps(payload)}
 
